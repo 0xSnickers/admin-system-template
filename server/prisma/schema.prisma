@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(uuid()) @db.Uuid
+  email         String         @unique @db.VarChar(255)
+  name          String         @db.VarChar(50)
+  passwordHash  String         @map("password_hash") @db.VarChar(255)
+  role          String         @default("user") @db.VarChar(20)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash") @db.VarChar(64)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// 被监控的项目（前端应用或后端服务），appKey 是上报凭证，可以公开放在前端代码里。
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  name        String        @db.VarChar(50)
+  appKey      String        @unique @map("app_key") @db.VarChar(64)
+  description String        @default("") @db.VarChar(200)
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  events      Event[]
+  errorIssues ErrorIssue[]
+  errorEvents ErrorEvent[]
+  serverLogs  ServerLog[]
+
+  @@map("projects")
+}
+
+/// 前端上报的行为数据：pageview（访问）、track（埋点）、performance（性能）。
+model Event {
+  id         String   @id @default(uuid()) @db.Uuid
+  projectId  String   @map("project_id") @db.Uuid
+  type       String   @db.VarChar(20)
+  name       String   @db.VarChar(100)
+  url        String   @db.VarChar(2048)
+  path       String   @db.VarChar(512)
+  referrer   String   @default("") @db.VarChar(2048)
+  visitorId  String   @map("visitor_id") @db.VarChar(64)
+  sessionId  String   @map("session_id") @db.VarChar(64)
+  userId     String?  @map("user_id") @db.VarChar(64)
+  ip         String   @db.VarChar(64)
+  browser    String   @db.VarChar(30)
+  os         String   @db.VarChar(30)
+  device     String   @db.VarChar(20)
+  release    String?  @db.VarChar(64)
+  properties Json     @default("{}")
+  occurredAt DateTime @map("occurred_at") @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, type, createdAt])
+  @@index([createdAt])
+  @@index([ip])
+  @@map("events")
+}
+
+/// 按指纹聚合后的前端异常（同一个问题只有一条），记录状态和出现次数。
+model ErrorIssue {
+  id          String       @id @default(uuid()) @db.Uuid
+  projectId   String       @map("project_id") @db.Uuid
+  fingerprint String       @db.VarChar(64)
+  type        String       @db.VarChar(20)
+  message     String       @db.VarChar(1000)
+  source      String       @default("") @db.VarChar(512)
+  status      String       @default("open") @db.VarChar(20)
+  count       Int          @default(0)
+  firstSeen   DateTime     @map("first_seen") @db.Timestamptz(3)
+  lastSeen    DateTime     @map("last_seen") @db.Timestamptz(3)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  events      ErrorEvent[]
+
+  @@unique([projectId, fingerprint])
+  @@index([projectId, lastSeen])
+  @@map("error_issues")
+}
+
+/// 每一次异常发生的现场：堆栈、页面、用户、设备、操作路径（breadcrumbs）。
+model ErrorEvent {
+  id          String     @id @default(uuid()) @db.Uuid
+  projectId   String     @map("project_id") @db.Uuid
+  issueId     String     @map("issue_id") @db.Uuid
+  message     String     @db.VarChar(1000)
+  stack       String     @default("") @db.Text
+  url         String     @db.VarChar(2048)
+  path        String     @db.VarChar(512)
+  visitorId   String     @map("visitor_id") @db.VarChar(64)
+  sessionId   String     @map("session_id") @db.VarChar(64)
+  userId      String?    @map("user_id") @db.VarChar(64)
+  ip          String     @db.VarChar(64)
+  browser     String     @db.VarChar(30)
+  os          String     @db.VarChar(30)
+  device      String     @db.VarChar(20)
+  release     String?    @db.VarChar(64)
+  breadcrumbs Json       @default("[]")
+  extra       Json       @default("{}")
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  issue       ErrorIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([ip])
+  @@map("error_events")
+}
+
+/// 后端日志：本服务的请求 / 异常日志（projectId 为空），以及外部后端服务通过上报接口写入的日志。
+model ServerLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  projectId  String?  @map("project_id") @db.Uuid
+  service    String   @db.VarChar(50)
+  level      String   @db.VarChar(10)
+  message    String   @db.VarChar(2000)
+  requestId  String?  @map("request_id") @db.VarChar(64)
+  method     String?  @db.VarChar(10)
+  path       String?  @db.VarChar(512)
+  status     Int?
+  durationMs Int?     @map("duration_ms")
+  ip         String?  @db.VarChar(64)
+  userAgent  String?  @map("user_agent") @db.VarChar(512)
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([projectId, createdAt])
+  @@index([service, createdAt])
+  @@index([ip])
+  @@map("server_logs")
+}
+
+/// IP 黑名单：命中的 IP 上报的数据会被拒绝（只作用于上报接口，不影响后台登录）。
+model IpRule {
+  id        String   @id @default(uuid()) @db.Uuid
+  ip        String   @unique @db.VarChar(64)
+  note      String   @default("") @db.VarChar(200)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("ip_rules")
+}
